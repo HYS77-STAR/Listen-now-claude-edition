@@ -1,0 +1,102 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Locate project directory
+        id: locate
+        run: |
+          set -e
+          PUB=$(find . -name pubspec.yaml -not -path './.git/*' | head -1)
+          if [ -z "$PUB" ]; then
+            ZIP=$(find . -name '*.zip' -not -path './.git/*' | head -1)
+            if [ -z "$ZIP" ]; then 
+              echo "Error: Neither pubspec.yaml nor .zip file was found in repository."
+              exit 1
+            fi
+            echo "Unzipping project archive: $ZIP"
+            mkdir -p unz && unzip -q "$ZIP" -d unz
+            PUB=$(find unz -name pubspec.yaml | head -1)
+          fi
+          
+          PROJECT_DIR=$(dirname "$PUB")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "Project path identified at: $PROJECT_DIR"
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate and configure Android structure
+        run: |
+          cd "$PROJECT_DIR"
+          
+          mkdir -p /tmp/keep
+          [ -d lib ] && cp -r lib /tmp/keep/
+          [ -d assets ] && cp -r assets /tmp/keep/
+          [ -f pubspec.yaml ] && cp pubspec.yaml /tmp/keep/
+          [ -f pubspec.lock ] && cp pubspec.lock /tmp/keep/
+
+          flutter create --platforms=android --org com.hus --project-name hus_player .
+
+          [ -d /tmp/keep/lib ] && cp -r /tmp/keep/lib .
+          [ -d /tmp/keep/assets ] && cp -r /tmp/keep/assets .
+          [ -f /tmp/keep/pubspec.yaml ] && cp /tmp/keep/pubspec.yaml .
+          [ -f /tmp/keep/pubspec.lock ] && cp /tmp/keep/pubspec.lock .
+
+          rm -f android/app/src/main/java/com/hus/hus_player/MainActivity.java
+          rm -f android/app/src/main/kotlin/com/hus/hus_player/MainActivity.kt
+
+          if [ -d android_overrides ]; then
+            echo "Applying android_overrides..."
+            cp -r android_overrides/. android/
+          fi
+
+      - name: Disable Lint Vital Tasks
+        run: |
+          mkdir -p $HOME/.gradle/init.d
+          cat > $HOME/.gradle/init.d/skip-lint.gradle <<'GRADLE'
+          allprojects {
+              tasks.whenTaskAdded { task ->
+                  if (task.name.startsWith('lintVital') || task.name.startsWith('lintAnalyze')) {
+                      task.enabled = false
+                  }
+              }
+          }
+          GRADLE
+
+      - name: Fetch Dependencies
+        run: |
+          cd "$PROJECT_DIR"
+          flutter pub get
+
+      - name: Build APK Release
+        run: |
+          cd "$PROJECT_DIR"
+          flutter build apk --release --no-shrink
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: listen-now-apk
+          path: |
+            **/build/app/outputs/flutter-apk/app-release.apk
+            **/build/app/outputs/apk/release/app-release.apk
+          if-no-files-found: error
