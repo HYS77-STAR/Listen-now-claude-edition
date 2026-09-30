@@ -1,55 +1,80 @@
 name: Build APK
+
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: app
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Locate project
-        working-directory: .
+      - name: Locate project directory
+        id: locate
         run: |
           set -e
           PUB=$(find . -name pubspec.yaml -not -path './.git/*' | head -1)
           if [ -z "$PUB" ]; then
             ZIP=$(find . -name '*.zip' -not -path './.git/*' | head -1)
-            if [ -z "$ZIP" ]; then echo "No pubspec.yaml and no zip found"; ls -R | head -50; exit 1; fi
-            mkdir unz && unzip -q "$ZIP" -d unz
+            if [ -z "$ZIP" ]; then 
+              echo "Error: Neither pubspec.yaml nor .zip file was found in repository."
+              exit 1
+            fi
+            echo "Unzipping project archive: $ZIP"
+            mkdir -p unz && unzip -q "$ZIP" -d unz
             PUB=$(find unz -name pubspec.yaml | head -1)
           fi
-          DIR=$(dirname "$PUB")
-          echo "Project found in: $DIR"
-          mkdir app
-          rsync -a --exclude .git --exclude app --exclude unz "$DIR"/ app/
-          ls -a app
+          
+          PROJECT_DIR=$(dirname "$PUB")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "Project path identified at: $PROJECT_DIR"
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: subosito/flutter-action@v2
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Generate Android project
+      - name: Generate and configure Android structure
         run: |
+          cd "$PROJECT_DIR"
+          
+          # إنشاء نسخة احتياطية آمنة للملفات والمجلدات الموجودة فقط
           mkdir -p /tmp/keep
-          cp -r lib assets pubspec.yaml /tmp/keep/
-          flutter create --platforms=android --org com.hus --project-name hus_player .
-          rm -rf lib assets pubspec.yaml test
-          cp -r /tmp/keep/lib /tmp/keep/assets /tmp/keep/pubspec.yaml .
-          rm -f android/app/src/main/java/com/hus/hus_player/MainActivity.java
-          cp -r android_overrides/. android/
+          [ -d lib ] && cp -r lib /tmp/keep/
+          [ -d assets ] && cp -r assets /tmp/keep/
+          [ -f pubspec.yaml ] && cp pubspec.yaml /tmp/keep/
+          [ -f pubspec.lock ] && cp pubspec.lock /tmp/keep/
 
-      - name: Skip lint-vital
+          # إعادة إنشاء هيكل الأندرويد
+          flutter create --platforms=android --org com.hus --project-name hus_player .
+
+          # استعادة الملفات المحفوظة
+          [ -d /tmp/keep/lib ] && cp -r /tmp/keep/lib .
+          [ -d /tmp/keep/assets ] && cp -r /tmp/keep/assets .
+          [ -f /tmp/keep/pubspec.yaml ] && cp /tmp/keep/pubspec.yaml .
+          [ -f /tmp/keep/pubspec.lock ] && cp /tmp/keep/pubspec.lock .
+
+          # إزالة ملفات MainActivity الافتراضية لتجنب التعارض مع التعديلات المخصصة
+          rm -f android/app/src/main/java/com/hus/hus_player/MainActivity.java
+          rm -f android/app/src/main/kotlin/com/hus/hus_player/MainActivity.kt
+
+          # تطبيق التعديلات المخصصة إن وجدت
+          if [ -d android_overrides ]; then
+            echo "Applying android_overrides..."
+            cp -r android_overrides/. android/
+          fi
+
+      - name: Disable Lint Vital Tasks
         run: |
           mkdir -p $HOME/.gradle/init.d
           cat > $HOME/.gradle/init.d/skip-lint.gradle <<'GRADLE'
@@ -62,10 +87,21 @@ jobs:
           }
           GRADLE
 
-      - run: flutter pub get
-      - run: flutter build apk --release --no-shrink
+      - name: Fetch Dependencies
+        run: |
+          cd "$PROJECT_DIR"
+          flutter pub get
 
-      - uses: actions/upload-artifact@v4
+      - name: Build APK Release
+        run: |
+          cd "$PROJECT_DIR"
+          flutter build apk --release --no-shrink
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: listen-now-apk
-          path: app/build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            **/build/app/outputs/flutter-apk/app-release.apk
+            **/build/app/outputs/apk/release/app-release.apk
+          if-no-files-found: error
