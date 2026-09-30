@@ -1,0 +1,60 @@
+name: Build Android APK (Release)
+
+# تحديد متى يتم تشغيل هذا الكود
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch: # يتيح لك زراً يدوياً لتشغيل البناء من واجهة GitHub مباشرة
+
+jobs:
+  build:
+    # استخدام أحدث نسخة من نظام أوبونتو (Linux) لسرعة وكفاءة البناء
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. سحب الكود المصدري من المستودع إلى الخادم السحابي
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. تهيئة بيئة Java (ضرورية جداً لمحرك بناء Android Gradle)
+      - name: Set up Java JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17' # نستخدم الإصدار 17 لتوافقه العالي مع أحدث حزم أندرويد
+
+      # 3. تهيئة محرك Flutter
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable' # استخدام النسخة المستقرة لتجنب الأخطاء التجريبية
+          cache: true       # تفعيل الذاكرة المخبئية لتسريع عمليات البناء المستقبلية
+
+      # 4. دمج التعديلات المخصصة (Android Overrides)
+      # هذه الخطوة حاسمة بناءً على تحليلي لملفاتك لضمان انتقال الأيقونات وكود Kotlin
+      - name: Apply Android Overrides
+        run: |
+          if [ -d "android_overrides" ]; then
+            echo "تم العثور على مجلد التعديلات، جاري الدمج..."
+            cp -R android_overrides/* android/ || true
+          else
+            echo "لا يوجد مجلد تعديلات إضافية، تخطي الخطوة."
+          fi
+
+      # 5. تحميل الحزم والمكتبات البرمجية المطلوبة
+      - name: Install Dependencies
+        run: flutter pub get
+
+      # 6. بدء عملية التجميع وبناء ملف الـ APK النهائي
+      - name: Build APK (Release Mode)
+        run: flutter build apk --release
+
+      # 7. رفع الملف النهائي كـ "Artifact" لكي تتمكن من تحميله
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-Release-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 7 # سيتم الاحتفاظ بالملف لمدة 7 أيام على خوادم جيتهاب
