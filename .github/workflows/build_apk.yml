@@ -1,4 +1,4 @@
-name: Build Android APK (Release)
+name: Build Android APK
 
 on:
   push:
@@ -16,282 +16,103 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # 1. تنزيل المستودع
-      - name: Checkout repository
+      # 1. Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v7
 
-      # 2. إعداد Java
+      # 2. Java
       - name: Set up Java
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. إعداد Flutter
+      # 3. Flutter
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # 4. اكتشاف نوع المشروع ومكانه
-      - name: Detect project type and root
-        id: detect
+      # 4. Find Flutter project
+      - name: Find Flutter Project
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          ROOT="$GITHUB_WORKSPACE"
-          PROJECT_DIR=""
-          PROJECT_TYPE=""
+          echo "Searching for pubspec.yaml..."
 
-          echo "Searching for Flutter project..."
+          PUBSPEC_PATH=$(find . -type f -name "pubspec.yaml" \
+            -not -path "./.git/*" \
+            -print -quit)
 
-          # البحث أولاً عن pubspec.yaml داخل مشروع Flutter حقيقي
-          PUBSPEC="$(
-            find "$ROOT" \
-              -type f \
-              -name "pubspec.yaml" \
-              -not -path "$ROOT/.git/*" \
-              -print0 2>/dev/null |
-            while IFS= read -r -d '' file; do
-              dir="$(dirname "$file")
-
-              if [ -d "$dir/android" ]; then
-                printf '%s\n' "$file"
-                break
-              fi
-            done
-          )"
-
-          # إذا كان المشروع مرفوعاً كملف ZIP، يتم فكّه تلقائياً
-          if [ -z "$PUBSPEC" ]; then
-
-            ZIP_FILE="$(
-              find "$ROOT" \
-                -maxdepth 2 \
-                -type f \
-                -iname "*.zip" \
-                -not -path "$ROOT/.git/*" \
-                -print \
-                -quit 2>/dev/null || true
-            )"
-
-            if [ -n "$ZIP_FILE" ]; then
-              echo "ZIP archive found:"
-              echo "$ZIP_FILE"
-
-              mkdir -p "$ROOT/.workflow_unzip"
-
-              unzip -q -o \
-                "$ZIP_FILE" \
-                -d "$ROOT/.workflow_unzip"
-
-              PUBSPEC="$(
-                find "$ROOT/.workflow_unzip" \
-                  -type f \
-                  -name "pubspec.yaml" \
-                  -print0 2>/dev/null |
-                while IFS= read -r -d '' file; do
-                  dir="$(dirname "$file")"
-
-                  if [ -d "$dir/android" ]; then
-                    printf '%s\n' "$file"
-                    break
-                  fi
-                done
-              )"
-            fi
-          fi
-
-          # إذا وجدنا Flutter
-          if [ -n "$PUBSPEC" ]; then
-
-            PROJECT_DIR="$(dirname "$PUBSPEC")"
-            PROJECT_TYPE="flutter"
-
-          else
-
-            echo "No Flutter project found."
-            echo "Searching for native Android/Gradle project..."
-
-            GRADLEW="$(
-              find "$ROOT" \
-                -type f \
-                -name "gradlew" \
-                -not -path "$ROOT/.git/*" \
-                -print \
-                -quit 2>/dev/null || true
-            )"
-
-            # إذا وجدنا مشروع Android أصلي
-            if [ -n "$GRADLEW" ]; then
-
-              PROJECT_DIR="$(dirname "$GRADLEW")"
-              PROJECT_TYPE="android"
-
-            fi
-
-          fi
-
-          # إذا لم نجد أي نوع مشروع
-          if [ -z "$PROJECT_DIR" ]; then
-
-            echo "::error::Could not find a Flutter project or Android Gradle project."
-
-            echo "Detected project files:"
-            find "$ROOT" \
-              -maxdepth 4 \
-              -type f \
-              \( \
-                -name "pubspec.yaml" \
-                -o -name "gradlew" \
-                -o -name "settings.gradle" \
-                -o -name "settings.gradle.kts" \
-              \) \
-              -print || true
-
+          if [ -z "$PUBSPEC_PATH" ]; then
+            echo "ERROR: pubspec.yaml was not found."
+            echo ""
+            echo "Repository structure:"
+            find . -maxdepth 3 -type f | sort
             exit 1
           fi
 
-          # تحويل المسار إلى مسار نسبي
-          REL="${PROJECT_DIR#"$ROOT"/}"
+          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
 
-          if [ "$REL" = "$PROJECT_DIR" ]; then
-            REL="."
-          fi
+          echo "Found Flutter project:"
+          echo "$PROJECT_DIR"
 
-          echo "================================="
-          echo "Project type: $PROJECT_TYPE"
-          echo "Project root: $REL"
-          echo "================================="
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "project_type=$PROJECT_TYPE" >> "$GITHUB_OUTPUT"
-          echo "project_dir=$REL" >> "$GITHUB_OUTPUT"
-
-      # 5. تطبيق تعديلات Android إن وجدت
-      - name: Apply Android overrides
+      # 5. Apply Android overrides
+      - name: Apply Android Overrides
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          PROJECT_DIR="${{ steps.detect.outputs.project_dir }}"
-
-          if [ "$PROJECT_DIR" = "." ]; then
-            PROJECT_PATH="$GITHUB_WORKSPACE"
-          else
-            PROJECT_PATH="$GITHUB_WORKSPACE/$PROJECT_DIR"
-          fi
-
-          ANDROID_DIR="$PROJECT_PATH/android"
-          OVERRIDES=""
-
-          # ابحث عن android_overrides داخل المشروع
-          if [ -d "$PROJECT_PATH/android_overrides" ]; then
-
-            OVERRIDES="$PROJECT_PATH/android_overrides"
-
-          # أو في جذر المستودع
-          elif [ -d "$GITHUB_WORKSPACE/android_overrides" ]; then
-
-            OVERRIDES="$GITHUB_WORKSPACE/android_overrides"
-
-          fi
-
-          if [ -n "$OVERRIDES" ] && [ -d "$ANDROID_DIR" ]; then
-
+          if [ -d "android_overrides" ]; then
             echo "Applying Android overrides..."
-            echo "Source: $OVERRIDES"
-            echo "Target: $ANDROID_DIR"
 
-            cp -a "$OVERRIDES"/. "$ANDROID_DIR"/
+            mkdir -p "$PROJECT_DIR/android"
 
+            cp -R android_overrides/. "$PROJECT_DIR/android/"
+
+            echo "Android overrides applied successfully."
           else
-
-            echo "No Android overrides found."
-            echo "Continuing without overrides."
-
+            echo "No android_overrides directory found."
           fi
 
-      # 6. تحميل Dependencies لمشروع Flutter فقط
-      - name: Flutter dependencies
-        if: steps.detect.outputs.project_type == 'flutter'
-        working-directory: ${{ steps.detect.outputs.project_dir }}
-        run: flutter pub get
-
-      # 7. بناء Flutter APK
-      - name: Build Flutter APK
-        if: steps.detect.outputs.project_type == 'flutter'
-        working-directory: ${{ steps.detect.outputs.project_dir }}
-        run: flutter build apk --release
-
-      # 8. بناء Android Native APK
-      - name: Build native Android APK
-        if: steps.detect.outputs.project_type == 'android'
-        working-directory: ${{ steps.detect.outputs.project_dir }}
-        shell: bash
+      # 6. Flutter dependencies
+      - name: Install Dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          chmod +x ./gradlew
-          ./gradlew assembleRelease --stacktrace
+          flutter pub get
 
-      # 9. جمع APK الناتج
-      - name: Collect APK
-        shell: bash
+      # 7. Build APK
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          set -euo pipefail
+          flutter build apk --release
 
-          rm -rf "$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-
-          PROJECT_DIR="${{ steps.detect.outputs.project_dir }}"
-
-          if [ "$PROJECT_DIR" = "." ]; then
-            PROJECT_PATH="$GITHUB_WORKSPACE"
-          else
-            PROJECT_PATH="$GITHUB_WORKSPACE/$PROJECT_DIR"
-          fi
-
-          # Flutter
-          if [ "${{ steps.detect.outputs.project_type }}" = "flutter" ]; then
-
-            APK_SOURCE="$PROJECT_PATH/build/app/outputs/flutter-apk"
-
-            find "$APK_SOURCE" \
-              -maxdepth 1 \
-              -type f \
-              -name "*.apk" \
-              -exec cp -f {} "$GITHUB_WORKSPACE/artifacts/" \;
-
-          # Android Native
-          else
-
-            find "$PROJECT_PATH" \
-              -type f \
-              -path "*/build/outputs/apk/release/*.apk" \
-              -exec cp -f {} "$GITHUB_WORKSPACE/artifacts/" \;
-
-          fi
-
-          # التأكد من وجود APK
-          if ! compgen -G "$GITHUB_WORKSPACE/artifacts/*.apk" > /dev/null; then
-
-            echo "::error::No release APK was produced."
-            exit 1
-
-          fi
-
-          echo "================================="
+      # 8. Verify APK
+      - name: Verify APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
           echo "Generated APK files:"
-          echo "================================="
+          find build -type f -name "*.apk" -print
 
-          ls -lh "$GITHUB_WORKSPACE/artifacts/"
+          APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
 
-      # 10. رفع APK كـ Artifact
-      - name: Upload APK artifact
+          if [ ! -f "$APK_PATH" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "APK found successfully:"
+          ls -lh "$APK_PATH"
+
+      # 9. Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: App-Release-APK
-          path: artifacts/*.apk
+          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 7
